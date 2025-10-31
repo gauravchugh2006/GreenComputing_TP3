@@ -10,6 +10,7 @@ import argparse
 import json
 import math
 import time
+import tracemalloc
 from collections import Counter
 from dataclasses import dataclass, asdict
 from datetime import datetime
@@ -46,6 +47,7 @@ class TaskBreakdown:
     energy_kwh: float
     emissions_kg: float
     output_rows: int
+    memory_peak_mb: float
 
 
 @dataclass
@@ -56,6 +58,7 @@ class PipelineResult:
     emissions_kg: float
     row_count: int
     output_path: str
+    output_size_bytes: int
     task_breakdown: List[TaskBreakdown]
     error: Optional[str] = None
 
@@ -77,38 +80,53 @@ def estimate_energy_and_emissions(duration_s: float) -> Tuple[float, float]:
     return energy_kwh, emissions_kg
 
 
-def _column_with_default(df: pd.DataFrame, column: str, default) -> pd.Series:
+def _series_with_default(df: pd.DataFrame, column: str, default) -> pd.Series:
+    """Return a Series for ``column`` ensuring vector semantics."""
+
     if column in df:
-        return df[column]
-    return pd.Series(default, index=df.index)
+        series = df[column]
+        if isinstance(series, pd.Series):
+            return series
+        # Column may be a scalar-like object; broadcast to the frame length.
+        return pd.Series([series] * len(df), index=df.index)
+    if len(df.index) == 0:
+        return pd.Series(dtype="object")
+    return pd.Series([default] * len(df), index=df.index)
 
 
 def clean_books(df: pd.DataFrame) -> pd.DataFrame:
-    cleaned = df.copy()
-    cleaned["Authors"] = _column_with_default(cleaned, "Authors", "Unknown").fillna("Unknown").astype(str)
-    cleaned["Authors"] = cleaned["Authors"].str.title()
-    cleaned["Publisher"] = _column_with_default(cleaned, "Publisher", "Unknown").fillna("Unknown").astype(str)
-    cleaned["Categories"] = _column_with_default(cleaned, "Categories", "misc").fillna("misc").astype(str)
-    cleaned["PublishedDate"] = pd.to_datetime(cleaned.get("PublishedDate"), errors="coerce")
-    cleaned["RatingsCount"] = pd.to_numeric(cleaned.get("RatingsCount"), errors="coerce").fillna(0).astype(int)
-    cleaned["AverageRating"] = pd.to_numeric(cleaned.get("AverageRating"), errors="coerce")
-    return cleaned
+    """Clean the books dataset in place and return it."""
+
+    authors = _series_with_default(df, "Authors", "Unknown").fillna("Unknown").astype(str)
+    df["Authors"] = authors.str.title()
+
+    df["Publisher"] = _series_with_default(df, "Publisher", "Unknown").fillna("Unknown").astype(str)
+    df["Categories"] = _series_with_default(df, "Categories", "misc").fillna("misc").astype(str)
+
+    df["PublishedDate"] = pd.to_datetime(df.get("PublishedDate"), errors="coerce")
+    df["RatingsCount"] = pd.to_numeric(_series_with_default(df, "RatingsCount", 0), errors="coerce").fillna(0).astype(int)
+    df["AverageRating"] = pd.to_numeric(df.get("AverageRating"), errors="coerce")
+    return df
 
 
 def clean_reviews(df: pd.DataFrame) -> pd.DataFrame:
-    cleaned = df.copy()
-    cleaned = cleaned.rename(columns={"profileName": "ProfileName"})
-    cleaned["review/text"] = _column_with_default(cleaned, "review/text", "").fillna("").astype(str)
-    cleaned["review/score"] = pd.to_numeric(cleaned.get("review/score"), errors="coerce")
-    cleaned["review/score"] = cleaned["review/score"].fillna(cleaned["review/score"].mean())
-    cleaned["review/time"] = pd.to_datetime(cleaned.get("review/time"), unit="s", errors="coerce")
-    return cleaned
+    """Clean the reviews dataset in place and return it."""
+
+    df.rename(columns={"profileName": "ProfileName"}, inplace=True)
+    df["review/text"] = _series_with_default(df, "review/text", "").fillna("").astype(str)
+
+    review_scores = pd.to_numeric(_series_with_default(df, "review/score", math.nan), errors="coerce")
+    mean_score = review_scores.mean() if not review_scores.dropna().empty else 0.0
+    df["review/score"] = review_scores.fillna(mean_score)
+
+    df["review/time"] = pd.to_datetime(df.get("review/time"), unit="s", errors="coerce")
+    return df
 
 
 def enrich_features(df: pd.DataFrame) -> pd.DataFrame:
     enriched = df.copy()
-    enriched["review_length"] = enriched["review/text"].str.split().map(len)
-    enriched["Categories"] = _column_with_default(enriched, "Categories", "misc").fillna("misc")
+    enriched["review_length"] = enriched["review/text"].astype(str).str.split().map(len)
+    enriched["Categories"] = _series_with_default(enriched, "Categories", "misc").fillna("misc")
     enriched["CategoriesList"] = (
         enriched["Categories"].astype(str).str.split("|").apply(lambda values: [v.strip().lower() for v in values if v])
     )
@@ -164,9 +182,15 @@ def compute_metrics(df: pd.DataFrame) -> Tuple[Dict[str, pd.DataFrame], List[Tas
     metrics: Dict[str, pd.DataFrame] = {}
     breakdown: List[TaskBreakdown] = []
     for task_id, task_label, task_fn in TASK_REGISTRY:
+        tracemalloc.start()
         task_start = time.perf_counter()
-        frame = task_fn(df)
-        duration = time.perf_counter() - task_start
+        try:
+            frame = task_fn(df)
+        finally:
+            duration = time.perf_counter() - task_start
+            _, peak_bytes = tracemalloc.get_traced_memory()
+            tracemalloc.stop()
+        memory_peak_mb = peak_bytes / (1024 ** 2)
         energy_kwh, emissions_kg = estimate_energy_and_emissions(duration)
         metrics[task_id] = frame
         breakdown.append(
@@ -177,6 +201,7 @@ def compute_metrics(df: pd.DataFrame) -> Tuple[Dict[str, pd.DataFrame], List[Tas
                 energy_kwh=energy_kwh,
                 emissions_kg=emissions_kg,
                 output_rows=int(len(frame)),
+                memory_peak_mb=memory_peak_mb,
             )
         )
     return metrics, breakdown
@@ -240,14 +265,20 @@ def persist_metrics(
     output_path: Path,
     writer: Callable[[pd.DataFrame, Path], None],
     analysis_dir: Path,
-) -> None:
+) -> int:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     writer(df, output_path)
+    try:
+        output_size = output_path.stat().st_size
+    except FileNotFoundError:
+        output_size = 0
 
     prefix = f"{format_name}_{output_path.stem}"
     for name, frame in metrics.items():
         target = analysis_dir / f"{prefix}_{name}.csv"
         frame.to_csv(target, index=False)
+
+    return output_size
 
 
 def run_pipeline(
@@ -264,6 +295,7 @@ def run_pipeline(
     emissions_from_tracker = math.nan
     error: Optional[str] = None
     merged_df: Optional[pd.DataFrame] = None
+    output_size_bytes = 0
 
     try:
         tracker.start()
@@ -274,7 +306,9 @@ def run_pipeline(
             reviews_df.merge(books_df, on="Title", how="inner", suffixes=("_review", "_book"))
         )
         metrics, task_breakdown = compute_metrics(merged_df)
-        persist_metrics(format_name, merged_df, metrics, outputs_dir / output_name, writer, analysis_dir)
+        output_size_bytes = persist_metrics(
+            format_name, merged_df, metrics, outputs_dir / output_name, writer, analysis_dir
+        )
     except Exception as pipeline_error:
         error = str(pipeline_error)
         task_breakdown = []
@@ -291,6 +325,8 @@ def run_pipeline(
             if isinstance(emissions_from_tracker, (int, float)) and not math.isnan(emissions_from_tracker)
             else estimated_emissions
         )
+        if merged_df is None:
+            output_size_bytes = 0
 
     return PipelineResult(
         format=format_name,
@@ -299,6 +335,7 @@ def run_pipeline(
         emissions_kg=emissions_kg,
         row_count=int(0 if merged_df is None else len(merged_df)),
         output_path=str(outputs_dir / output_name),
+        output_size_bytes=int(output_size_bytes),
         task_breakdown=task_breakdown,
         error=error,
     )
@@ -310,6 +347,12 @@ def _load_csv(data_dir: Path) -> Tuple[pd.DataFrame, pd.DataFrame]:
 
 def _load_parquet(data_dir: Path) -> Tuple[pd.DataFrame, pd.DataFrame]:
     return pd.read_parquet(data_dir / "books_data.parquet"), pd.read_parquet(data_dir / "Books_rating.parquet")
+
+
+def _load_parquet_gzip(data_dir: Path) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    return pd.read_parquet(data_dir / "books_data_gzip.parquet"), pd.read_parquet(
+        data_dir / "Books_rating_gzip.parquet"
+    )
 
 
 def _write_csv(df: pd.DataFrame, path: Path) -> None:
@@ -332,24 +375,42 @@ def _write_filtered_parquet(df: pd.DataFrame, path: Path) -> None:
         filtered.to_parquet(path, index=False)
 
 
+def _write_parquet_gzip(df: pd.DataFrame, path: Path) -> None:
+    df.to_parquet(path, index=False, compression="gzip")
+
+
 def _refresh_parquet_copies(data_dir: Path) -> None:
-    for source_name, target_name in (
-        ("books_data.csv", "books_data.parquet"),
-        ("Books_rating.csv", "Books_rating.parquet"),
-    ):
+    refresh_specs = [
+        ("books_data.csv", "books_data.parquet", clean_books),
+        ("Books_rating.csv", "Books_rating.parquet", clean_reviews),
+    ]
+    for source_name, target_name, cleaner in refresh_specs:
         source = data_dir / source_name
-        target = data_dir / target_name
+        target_snappy = data_dir / target_name
+        target_gzip = data_dir / f"{Path(target_name).stem}_gzip.parquet"
+
         needs_refresh = True
-        if target.exists():
+        if target_snappy.exists() and target_gzip.exists():
             try:
-                needs_refresh = source.stat().st_mtime > target.stat().st_mtime
+                source_mtime = source.stat().st_mtime
+                needs_refresh = (
+                    source_mtime > target_snappy.stat().st_mtime
+                    or source_mtime > target_gzip.stat().st_mtime
+                )
             except OSError:
                 needs_refresh = True
             else:
                 if not needs_refresh:
                     continue
+
         df_full = pd.read_csv(source)
-        df_full.to_parquet(target, index=False)
+        cleaner(df_full)
+        df_full.to_csv(source, index=False)
+        try:
+            df_full.to_parquet(target_snappy, index=False, compression="snappy")
+        except Exception:
+            df_full.to_parquet(target_snappy, index=False)
+        df_full.to_parquet(target_gzip, index=False, compression="gzip")
 
 
 def _export_summary(
@@ -440,6 +501,17 @@ def run_benchmark(data_dir: Path, outputs_dir: Path, analysis_dir: Path, generat
             _write_parquet,
             "merged_books_reviews_parquet.parquet",
             "parquet_pipeline",
+            analysis_dir,
+            outputs_dir,
+        )
+    )
+    results.append(
+        run_pipeline(
+            "parquet_gzip",
+            lambda: _load_parquet_gzip(data_dir),
+            _write_parquet_gzip,
+            "merged_books_reviews_parquet_gzip.parquet",
+            "parquet_gzip_pipeline",
             analysis_dir,
             outputs_dir,
         )
