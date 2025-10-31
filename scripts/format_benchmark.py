@@ -133,6 +133,24 @@ def enrich_features(df: pd.DataFrame) -> pd.DataFrame:
     return enriched
 
 
+def _compute_top_keywords(df: pd.DataFrame, top_n: int = 20) -> pd.DataFrame:
+    """Return the ``top_n`` most common keywords without loading the full corpus."""
+
+    counter: Counter[str] = Counter()
+    review_series = _series_with_default(df, "review/text", "")
+
+    for review in review_series.astype(str):
+        if not review:
+            continue
+        counter.update(word for word in review.lower().split())
+
+    most_common = counter.most_common(top_n)
+    if not most_common:
+        return pd.DataFrame(columns=["keyword", "occurrences"])
+
+    return pd.DataFrame(most_common, columns=["keyword", "occurrences"])
+
+
 TASK_REGISTRY: List[Tuple[str, str, Callable[[pd.DataFrame], pd.DataFrame]]] = [
     (
         "avg_rating_per_author",
@@ -170,10 +188,7 @@ TASK_REGISTRY: List[Tuple[str, str, Callable[[pd.DataFrame], pd.DataFrame]]] = [
     (
         "top_keywords",
         "Most frequent review keywords",
-        lambda df: pd.DataFrame(
-            Counter(" ".join(df["review/text"]).lower().split()).most_common(20),
-            columns=["keyword", "occurrences"],
-        ),
+        lambda df: _compute_top_keywords(df, top_n=20),
     ),
 ]
 
