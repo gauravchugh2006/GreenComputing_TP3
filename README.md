@@ -63,7 +63,7 @@ Pipelines:
 3. **Join** on `Title`
 4. **Compute metrics**:
    - avg rating per author
-   - # reviews per publisher
+   - reviews per publisher
    - top 10 most-reviewed categories
 5. **Text processing**: avg review length, most frequent keywords
 6. **Save results** **in the same format** (CSV pipeline → CSV, Parquet pipeline → Parquet) :contentReference[oaicite:4]{index=4}
@@ -91,8 +91,8 @@ import pandas as pd
 tracker = EmissionsTracker(project_name="csv_pipeline")
 tracker.start()
 
-books = pd.read_csv("data/books.csv")
-reviews = pd.read_csv("data/reviews.csv")
+books = pd.read_csv("data/books_data.csv")
+reviews = pd.read_csv("data/Books_rating.csv")
 
 df = (
     reviews.merge(books, on="Title", how="inner")
