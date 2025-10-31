@@ -1,4 +1,0 @@
-format,runtime_s,emissions_kg,error,row_count
-csv,2.4444132999924477,2.3795923850142465e-06,'Authors',0
-parquet,2.382503300003009,2.319287743061748e-06,'Authors',0
-parquet_filtered,2.172410700004548,2.1154822825557254e-06,'Authors',0

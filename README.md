@@ -43,14 +43,12 @@ Your job: **replay the same pipeline twice** — once with CSV, once with Parque
 ---
 
 ## 3. Datasets Overview
-You will reuse the TP2 data:
+Two source files are required under `data/` before you run the notebook:
 
-1. **`books.csv`**  
-   - `Title`, `Description`, `Authors`, `Publisher`, `PublishedDate`, `Categories`, `RatingsCount`, …  
-2. **`reviews.csv`**  
-   - `Id`, `Title`, `Price`, `User_id`, `profileName`, `review/score`, `review/text`, `review/time`, … :contentReference[oaicite:3]{index=3}
+1. **`books_data.csv`** – bibliographic metadata with columns such as `Title`, `Description`, `Authors`, `Publisher`, `PublishedDate`, `Categories`, and `RatingsCount`.
+2. **`Books_rating.csv`** – crowd-sourced reviews with `Id`, `Title`, `Price`, `User_id`, `profileName`, `review/score`, `review/text`, and `review/time`. :contentReference[oaicite:3]{index=3}
 
-👉 In the notebook: add a short cell that **loads and displays** the head of each CSV (`books.head()`, `reviews.head()`) so the user understands columns before processing.
+The notebook validates that both CSVs exist, previews a handful of rows, and creates synchronised Parquet copies so the CSV and Parquet pipelines analyse identical content.
 
 ---
 
@@ -81,178 +79,66 @@ Both must call the **same** functions where possible — only I/O changes.
 Your PDF defines 4 tasks, which correspond to the main notebook sections. Below is how to **code**, **run**, and **interpret** each of them. :contentReference[oaicite:5]{index=5}
 
 ### Task 1 — CSV Baseline
-**Purpose:** establish a reference in the *current* format.  
-**What to code:**
+**Purpose:** establish the performance and sustainability baseline using the raw CSV assets.
 
-```python
-from codecarbon import EmissionsTracker
-import pandas as pd
+The notebook provides a reusable `run_pipeline` helper that loads the CSVs, cleans and enriches the records, merges books with reviews, and computes the five requested analytics tasks:
 
-tracker = EmissionsTracker(project_name="csv_pipeline")
-tracker.start()
+1. Average rating per author.
+2. Reviews per publisher.
+3. Top 10 most-reviewed categories.
+4. Average review length.
+5. Most frequent keywords.
 
-books = pd.read_csv("data/books_data.csv")
-reviews = pd.read_csv("data/Books_rating.csv")
-
-df = (
-    reviews.merge(books, on="Title", how="inner")
-    # add cleaning here: dropna, normalize authors, etc.
-)
-
-df.to_csv("outputs/merged_books_reviews.csv", index=False)
-
-emissions = tracker.stop()
-print("CSV pipeline emissions (kg):", emissions)
-````
-
-**What to run:**
-
-1. Run the **install/import** cell (CodeCarbon + pandas).
-2. Run the **CSV pipeline** cell.
-3. Check that it produced:
-
-   * `outputs/merged_books_reviews.csv`
-   * `emissions.csv` (default CodeCarbon log) → rename/export as `emissions_csv.csv` as per instructions. 
-
-**What to understand:** this is the **baseline** — all later measurements are compared to this.
+Running the Task 1 cell executes the CSV pipeline, records runtime plus CodeCarbon emissions, exports the merged dataset to `outputs/merged_books_reviews_csv.csv`, and saves a summary snapshot to `analysis/csv_pipeline_summary.csv`.
 
 ---
 
 ### Task 2 — Parquet Pipeline
 
-**Purpose:** do **the same ETL** but in Parquet.
+**Purpose:** replay the identical ETL flow using Parquet inputs/outputs.
 
-**Step A – convert raw CSV → Parquet** (one-off):
+As part of the setup, the notebook refreshes `books_data.parquet` and `Books_rating.parquet` from the CSV sources (skipping the conversion when the Parquet files are already up-to-date). The Task 2 cell reuses `run_pipeline`, swapping in Parquet loaders and writers. The merged dataset is exported to `outputs/merged_books_reviews_parquet.parquet`, with pipeline metrics captured in `analysis/parquet_pipeline_summary.csv`.
 
-```python
-books = pd.read_csv("data/books.csv")
-reviews = pd.read_csv("data/reviews.csv")
-
-books.to_parquet("data/books.parquet", compression="snappy")
-reviews.to_parquet("data/reviews.parquet", compression="snappy")
-```
-
-**Step B – run the ETL in Parquet with CodeCarbon:**
-
-```python
-from codecarbon import EmissionsTracker
-import pandas as pd
-
-tracker = EmissionsTracker(project_name="parquet_pipeline")
-tracker.start()
-
-books = pd.read_parquet("data/books.parquet")
-reviews = pd.read_parquet("data/reviews.parquet")
-
-df = (
-    reviews.merge(books, on="Title", how="inner")
-    .dropna(subset=["review/score", "Authors"])
-)
-
-df.to_parquet(
-    "outputs/merged_books_reviews.parquet",
-    compression="snappy"
-)
-
-emissions = tracker.stop()
-print("Parquet pipeline emissions (kg):", emissions)
-```
-
-Then **export**/rename CodeCarbon log to `emissions_parquet.csv`. 
-
-**What to understand:** if Parquet is smaller and faster to read/write, it should **also** show lower CO₂ for the same work.
+Because only the storage format changes, differences in runtime, energy consumption, and CO₂ directly reflect the efficiency gains from Parquet.
 
 ---
 
 ### Task 3 — Comparison and Analysis
 
-Now read both emission logs and build a **summary table** like the one in the PDF:
+Running the comparison cell builds all required artefacts automatically:
 
-| Step       | Format  | Duration (s) | Energy (kWh) | CO₂ (kg) | Output Size (MB) |
-| ---------- | ------- | ------------ | ------------ | -------- | ---------------- |
-| Load books | CSV     | ...          | ...          | ...      | ...              |
-| Load books | Parquet | ...          | ...          | ...      | ...              |
-| Save merge | CSV     | ...          | ...          | ...      | ...              |
-| Save merge | Parquet | ...          | ...          | ...      | ...              |
+1. `analysis/format_comparison.csv` — pipeline-level runtime, energy (kWh), and CO₂ (kg) for each format.
+2. `analysis/format_task_comparison.csv` — per-task runtime/energy/emissions covering the five analytics tasks above.
+3. `analysis/format_comparison.png` — a Matplotlib triptych contrasting runtime, energy, and CO₂.
+4. `analysis/task_runtime_comparison.html` — a Plotly grouped bar chart comparing task runtimes by format.
 
-Then create **2 bar charts**:
-
-1. **Runtime vs format**
-2. **CO₂ vs format**
-
-In notebook code (example):
-
-```python
-import pandas as pd
-import matplotlib.pyplot as plt
-
-df = pd.read_csv("analysis/format_comparison.csv")
-
-df_runtime = df.pivot(index="Step", columns="Format", values="Duration_s")
-df_runtime.plot(kind="bar", title="Runtime by format")
-
-plt.show()
-
-df_co2 = df.pivot(index="Step", columns="Format", values="CO2_kg")
-df_co2.plot(kind="bar", title="CO₂ emissions by format")
-
-plt.show()
-```
-
-**What to discuss** (put this in a markdown cell called `### Discussion`):
-
-* Which format is **faster**?
-* Which one **emits less CO₂**?
-* How much **storage** is saved with Parquet?
-* Does **compression always** reduce emissions, or only when I/O dominates? 
+These files are generated fresh on every run, so the repository no longer ships pre-seeded comparison data. Review the rendered tables and figures in the notebook output to explain which format is greener and which tasks dominate resource usage.
 
 ---
 
 ## 6. Task 4 — Eco-Design Experiment
 
-The brief says: **pick ONE optimization**, re-run, compare before/after. Options:
-
-* filter out unused columns **before** saving
-* change compression (gzip, brotli, snappy)
-* reduce dataset size (sample 50%)
-* cache intermediates (if PySpark) 
-
-A simple option for pandas/Parquet:
-
-```python
-keep_cols = ["Title", "Authors", "Publisher", "review/score", "review/text"]
-
-tracker = EmissionsTracker(project_name="parquet_filtered")
-tracker.start()
-
-df_filtered = df[keep_cols]
-df_filtered.to_parquet("outputs/merged_filtered.parquet", compression="snappy")
-
-emissions_filtered = tracker.stop()
-print("Filtered parquet emissions (kg):", emissions_filtered)
-```
-
-👉 Then add a markdown cell: **“Before vs After optimization”** with a small 4–5 line explanation:
-
-* we removed columns
-* file became smaller
-* write time dropped
-* CO₂ dropped accordingly
-* note: if CPU compression ↑ a lot, benefit may shrink
+The notebook demonstrates an eco-design tweak by writing a column-pruned Parquet dataset via `run_pipeline`. Only the columns needed for downstream analytics are persisted, which reduces I/O and emissions compared with the full Parquet export. Document the observed delta in the **“Before vs After optimization”** markdown cell.
 
 ---
 
 ## 7. Deliverables
 
-As per the brief, the final repo/notebook should contain: 
+As per the brief, the final repo/notebook should contain:
 
-1. `tp_codecarbon_parquet.ipynb` (your main notebook, structured exactly as above)
-2. `emissions_csv.csv`
-3. `emissions_parquet.csv`
-4. **1 figure** comparing runtime and emissions (can be 2 matplotlib figures)
-5. **A 10-line reflection** on trade-offs (readability, performance, sustainability)
+1. `tp_codecarbon_parquet.ipynb` (structured according to the PDF checklist).
+2. Generated outputs under `outputs/` after execution:
+   - `outputs/merged_books_reviews_csv.csv`
+   - `outputs/merged_books_reviews_parquet.parquet`
+   - `outputs/merged_books_reviews_parquet_filtered.parquet`
+3. Generated analysis artefacts under `analysis/` after execution:
+   - `analysis/csv_pipeline_summary.csv`
+   - `analysis/parquet_pipeline_summary.csv`
+   - `analysis/format_comparison.csv` and `analysis/format_comparison.png`
+   - `analysis/format_task_comparison.csv` and `analysis/task_runtime_comparison.html`
+4. **A reflection section (7–9 bullet points)** on trade-offs (readability, performance, sustainability)
 
-👉 Add a markdown section in the notebook called **“Reflection (10 lines)”** and write it there so the grader finds it quickly.
+👉 Add a markdown section in the notebook called **“Reflection (8 points)”** and write it there so the grader finds it quickly.
 
 ---
 
@@ -274,8 +160,8 @@ When you run everything correctly, you should be able to **observe** (and theref
 
 2. Put raw files in `data/`:
 
-   * `data/books.csv`
-   * `data/reviews.csv`
+   * `data/books_data.csv`
+   * `data/Books_rating.csv`
 
 3. Create a virtual env (optional but recommended):
 
@@ -297,6 +183,7 @@ When you run everything correctly, you should be able to **observe** (and theref
    pyarrow        # for parquet
    codecarbon
    matplotlib
+   plotly
    ```
 
 5. **Launch**:
@@ -305,12 +192,7 @@ When you run everything correctly, you should be able to **observe** (and theref
    jupyter notebook
    ```
 
-6. Open `tp_codecarbon_parquet.ipynb` and run cells from top to bottom:
-
-   * first the CSV baseline
-   * then the Parquet pipeline
-   * then the comparison
-   * then the eco-design experiment
+6. Open `tp_codecarbon_parquet.ipynb` and run cells from top to bottom. The notebook will validate the CSV inputs, refresh the Parquet copies, execute the CSV and Parquet pipelines, build comparison artefacts, and finally run the eco-design experiment.
 
 ---
 
@@ -319,16 +201,21 @@ When you run everything correctly, you should be able to **observe** (and theref
 ```text
 .
 ├── data/
-│   ├── books.csv
-│   ├── reviews.csv
+│   ├── books_data.csv
+│   ├── Books_rating.csv
+│   ├── books_data.parquet
+│   └── Books_rating.parquet
 ├── outputs/
-│   ├── merged_books_reviews.csv
-│   ├── merged_books_reviews.parquet
-│   ├── merged_filtered.parquet
+│   ├── merged_books_reviews_csv.csv
+│   ├── merged_books_reviews_parquet.parquet
+│   └── merged_books_reviews_parquet_filtered.parquet
 ├── analysis/
-│   └── format_comparison.csv
-├── emissions_csv.csv
-├── emissions_parquet.csv
+│   ├── csv_pipeline_summary.csv
+│   ├── parquet_pipeline_summary.csv
+│   ├── format_comparison.csv
+│   ├── format_comparison.png
+│   ├── format_task_comparison.csv
+│   └── task_runtime_comparison.html
 ├── tp_codecarbon_parquet.ipynb
 └── README.md   ← (this file)
 ```
