@@ -20,6 +20,7 @@ This README explains how to **read**, **run**, and **understand** the Python not
 8. [Expected Outcomes](#8-expected-outcomes)
 9. [How to Run the Notebook](#how-to-run-the-notebook)
 10. [Project Structure (suggested)](#project-structure-suggested)
+11. [Command Line Benchmark Script](#11-command-line-benchmark-script)
 
 ---
 
@@ -219,6 +220,26 @@ When you run everything correctly, you should be able to **observe** (and theref
 ├── tp_codecarbon_parquet.ipynb
 └── README.md   ← (this file)
 ```
+
+---
+
+## 11. Command Line Benchmark Script
+
+Prefer running the analysis without Jupyter? A standalone CLI is available at
+`scripts/format_benchmark.py`. It mirrors the notebook pipeline, converting the
+CSV datasets to Parquet, executing both versions with CodeCarbon, and exporting
+the comparison artefacts.
+
+```
+python scripts/format_benchmark.py \
+    --data-dir data \
+    --outputs-dir outputs \
+    --analysis-dir analysis
+```
+
+The script prints a JSON summary for each run and regenerates the same
+CSV/Parquet reports and visualisations stored in the `analysis/` directory. Use
+`--no-plots` when Matplotlib or Plotly are unavailable.
 
 ---
 
