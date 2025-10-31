@@ -1,2 +1,2 @@
 format,runtime_s,energy_kwh,emissions_kg,row_count,error,output_path
-csv,25.625085899984697,0.0010677119124993624,2.4921952700318152e-05,0,'str' object has no attribute 'fillna',outputs\merged_books_reviews_csv.csv
+csv,24.625211400008993,0.0010260504750003747,2.3955164299825786e-05,0,'numpy.float64' object has no attribute 'fillna',outputs\merged_books_reviews_csv.csv
