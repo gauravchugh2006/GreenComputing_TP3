@@ -209,3 +209,5 @@ data/books_data.csv
 data/Books_rating.csv
 data/books_data.parquet
 data/Books_rating.parquet
+data/Books_rating_gzip.parquet
+data/books_data_gzip.parquet
