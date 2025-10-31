@@ -1,0 +1,2 @@
+format,runtime_s,energy_kwh,emissions_kg,row_count,error,output_path
+parquet,10.769444700010354,0.0004487268625004314,1.0479017988600773e-05,0,'str' object has no attribute 'fillna',outputs\merged_books_reviews_parquet.parquet
